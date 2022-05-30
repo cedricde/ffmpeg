@@ -35,6 +35,10 @@
 #include "libavformat/avformat.h"
 #include "libavformat/internal.h"
 
+#define NVFBC_MIN_VERSION(x,y)  \
+    (NVFBC_VERSION_MAJOR > (x) || (NVFBC_VERSION_MAJOR == (x) \
+                                   && NVFBC_VERSION_MINOR >= (y)))
+
 typedef struct NvFBCContext {
     const AVClass *class;
 
@@ -47,9 +51,6 @@ typedef struct NvFBCContext {
     int frame_width, frame_height;
     /// Pixel format
     enum AVPixelFormat format;
-
-    /// True to capture the mouse pointer, false to hide it
-    int capture_mouse;
 
     /// Capture framerate
     AVRational framerate;
@@ -86,7 +87,6 @@ static const AVOption options[] = {
     { "video_size", "set capture output size", OFFSET(frame_width), AV_OPT_TYPE_IMAGE_SIZE, { .str = NULL }, 0, 0, FLAGS },
     { "pixel_format", "set pixel format", OFFSET(format), AV_OPT_TYPE_PIXEL_FMT, { .i64 = AV_PIX_FMT_NONE }, -1, INT_MAX, FLAGS },
     { "framerate", "set capture framerate", OFFSET(framerate), AV_OPT_TYPE_VIDEO_RATE, { .str = "pal" }, 0, INT_MAX, FLAGS },
-    { "capture_mouse", "capture the mouse pointer", OFFSET(capture_mouse), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, FLAGS },
     { NULL },
 };
 
@@ -100,7 +100,7 @@ static const struct {
     { AV_PIX_FMT_NV12,      NVFBC_BUFFER_FORMAT_NV12,       12  },
     { AV_PIX_FMT_YUV444P,   NVFBC_BUFFER_FORMAT_YUV444P,    24  },
     { AV_PIX_FMT_RGBA,      NVFBC_BUFFER_FORMAT_RGBA,       32  },
-    { AV_PIX_FMT_BGRA,      NVFBC_BUFFER_FORMAT_BGRA,       32  },
+    { AV_PIX_FMT_BGRA,      NVFBC_BUFFER_FORMAT_BGRA,       32  },  // native
 };
 
 static const struct {
@@ -125,6 +125,9 @@ static const struct {
     { NVFBC_ERR_ENCODER,        AVERROR_EXTERNAL,       "HW encoder error"          },
     { NVFBC_ERR_CONTEXT,        AVERROR(EBADF),         "NvFBC context error"       },
     { NVFBC_ERR_MUST_RECREATE,  AVERROR_INPUT_CHANGED,  "modeset event occurred"    },
+#if NVFBC_MIN_VERSION(1, 8)
+    { NVFBC_ERR_VULKAN,         AVERROR_EXTERNAL,       "Vulkan error"              },
+#endif
 };
 
 static int error_nv2av(NVFBCSTATUS nverr, const char **desc)
@@ -249,6 +252,7 @@ static av_cold int create_capture_session(AVFormatContext *s)
         .dwVersion                   = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER,
         .eCaptureType                = NVFBC_CAPTURE_TO_SYS,
         .bDisableAutoModesetRecovery = NVFBC_TRUE,
+        .bWithCursor                 = NVFBC_TRUE,
         .eTrackingType               = NVFBC_TRACKING_SCREEN,
         .bPushModel                  = NVFBC_FALSE,
         .dwSamplingRateMs            = av_rescale_q(c->frame_duration, AV_TIME_BASE_Q, (AVRational){ 1, 1000 }),
@@ -263,7 +267,6 @@ static av_cold int create_capture_session(AVFormatContext *s)
             .h = c->frame_height,
         },
         .bRoundFrameSize             = NVFBC_FALSE,
-        .bWithCursor                 = c->capture_mouse ? NVFBC_TRUE : NVFBC_FALSE,
     };
     NVFBC_TOSYS_SETUP_PARAMS nv_tosys_setup_params = {
         .dwVersion     = NVFBC_TOSYS_SETUP_PARAMS_VER,
@@ -298,14 +301,14 @@ static av_cold int create_capture_session(AVFormatContext *s)
            "- Screen size: %"PRIu32"x%"PRIu32"\n"
            "- RandR extension available: %s\n"
            "- Output connected: %"PRIu32"\n"
-           "- Lib version: %"PRIu32".%"PRIu32"\n",
+           "- Library API version: %"PRIu32".%"PRIu32"\n",
            nv_get_status_params.bIsCapturePossible ? "yes" : "no",
            nv_get_status_params.bCurrentlyCapturing ? "yes" : "no",
            nv_get_status_params.bCanCreateNow ? "yes" : "no",
            nv_get_status_params.screenSize.w, nv_get_status_params.screenSize.h,
            nv_get_status_params.bXRandRAvailable ? "yes" : "no",
            nv_get_status_params.dwOutputNum,
-           nv_get_status_params.dwNvFBCVersion >> 8,
+           (nv_get_status_params.dwNvFBCVersion >> 8) & 0xFF,
            nv_get_status_params.dwNvFBCVersion & 0xFF);
 
     if (nv_get_status_params.bCanCreateNow == NVFBC_FALSE) {
