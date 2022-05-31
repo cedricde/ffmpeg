@@ -337,7 +337,6 @@ External library support:
   --disable-d3d11va        disable Microsoft Direct3D 11 video acceleration code [autodetect]
   --disable-dxva2          disable Microsoft DirectX 9 video acceleration code [autodetect]
   --disable-ffnvcodec      disable dynamically linked Nvidia code [autodetect]
-  --disable-ffnvfbc        disable dynamically linked Nvidia Capture SDK code [autodetect]
   --enable-libdrm          enable DRM code (Linux) [no]
   --enable-libmfx          enable Intel MediaSDK (AKA Quick Sync Video) code via libmfx [no]
   --enable-libnpp          enable Nvidia Performance Primitives-based code [no]
@@ -1894,7 +1893,6 @@ HWACCEL_AUTODETECT_LIBRARY_LIST="
     d3d11va
     dxva2
     ffnvcodec
-    ffnvfbc
     nvdec
     nvenc
     nvfbc
@@ -3002,7 +3000,6 @@ cuvid_deps="ffnvcodec"
 d3d11va_deps="dxva_h ID3D11VideoDecoder ID3D11VideoContext"
 dxva2_deps="dxva2api_h DXVA2_ConfigPictureDecode ole32 user32"
 ffnvcodec_deps_any="libdl LoadLibrary"
-ffnvfbc_deps="libdl"
 nvdec_deps="ffnvcodec"
 vaapi_x11_deps="xlib_x11"
 videotoolbox_hwaccel_deps="videotoolbox pthreads"
@@ -3521,7 +3518,7 @@ kmsgrab_indev_deps="libdrm"
 lavfi_indev_deps="avfilter"
 libcdio_indev_deps="libcdio"
 libdc1394_indev_deps="libdc1394"
-nvfbc_indev_deps="ffnvfbc xlib_x11"
+nvfbc_indev_deps="libdl xlib_x11"
 nvfbc_indev_suggest="cuda"
 openal_indev_deps="openal"
 opengl_outdev_deps="opengl"
@@ -6428,12 +6425,6 @@ if ! disabled ffnvcodec; then
       check_pkg_config ffnvcodec "ffnvcodec >= 8.1.24.11 ffnvcodec < 8.2" "$ffnv_hdr_list" ""
 fi
 
-if ! disabled ffnvfbc; then
-    ffnv_hdr_list="ffnvfbc/NvFBC.h ffnvfbc/dynlink_loader.h"
-    check_pkg_config ffnvfbc "ffnvfbc >= 8.0.8.0" "$ffnv_hdr_list" "" || \
-      check_pkg_config ffnvfbc "ffnvfbc >= 7.1.9.0 ffnvfbc < 8.0" "$ffnv_hdr_list" ""
-fi
-
 if enabled_all libglslang libshaderc; then
     die "ERROR: libshaderc and libglslang are mutually exclusive, if in doubt, disable libglslang"
 fi
@@ -6955,7 +6946,7 @@ if enabled x86; then
         mingw32*|mingw64*|win32|win64|linux|cygwin*)
             ;;
         *)
-            disable ffnvcodec cuvid nvdec nvenc ffnvfbc nvfbc
+            disable ffnvcodec cuvid nvdec nvenc nvfbc
             ;;
     esac
 elif enabled_any aarch64 ppc64 && ! enabled bigendian; then
@@ -6963,11 +6954,11 @@ elif enabled_any aarch64 ppc64 && ! enabled bigendian; then
         linux)
             ;;
         *)
-            disable ffnvcodec cuvid nvdec nvenc ffnvfbc nvfbc
+            disable ffnvcodec cuvid nvdec nvenc nvfbc
             ;;
     esac
 else
-    disable ffnvcodec cuvid nvdec nvenc ffnvfbc nvfbc
+    disable ffnvcodec cuvid nvdec nvenc nvfbc
 fi
 
 enabled ffnvcodec && enable cuda
@@ -6986,7 +6977,7 @@ fi
 
 enabled nvfbc &&
     test_cc -I$source_path <<EOF || disable nvfbc
-#include <ffnvfbc/NvFBC.h>
+#include "compat/nvfbc/NvFBC.h"
 NVFBC_API_FUNCTION_LIST flist;
 void f(void) { struct { const NVFBC_CREATE_CAPTURE_SESSION_PARAMS params; } s[] = { { NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER } }; }
 int main(void) { return 0; }

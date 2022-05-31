@@ -24,8 +24,8 @@
 #include <stdlib.h>
 #include <X11/Xlib.h>
 
-#include <ffnvfbc/NvFBC.h>
-#include <ffnvfbc/dynlink_loader.h>
+#include "compat/nvfbc/NvFBC.h"
+#include "compat/nvfbc/dynlink_loader.h"
 
 #include "libavutil/avutil.h"
 #include "libavutil/internal.h"
