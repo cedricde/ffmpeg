@@ -49,7 +49,7 @@ typedef struct NvFBCContext {
     int frame_width, frame_height;
     /// Name of the output to capture or NULL for capture box in whole X screen
     const char *output_name;
-    /// Pixel format
+    /// Pixel format (AV_PIX_FMT_NONE if none specified)
     enum AVPixelFormat format;
 
     /// Capture framerate
@@ -93,12 +93,12 @@ static const struct {
     NVFBC_BUFFER_FORMAT nvfbc_fmt;
     int bpp;
 } nvfbc_formats[] = {
-    { AV_PIX_FMT_ARGB,      NVFBC_BUFFER_FORMAT_ARGB,       32  },
-    { AV_PIX_FMT_RGB24,     NVFBC_BUFFER_FORMAT_RGB,        24  },
-    { AV_PIX_FMT_NV12,      NVFBC_BUFFER_FORMAT_NV12,       12  },
-    { AV_PIX_FMT_YUV444P,   NVFBC_BUFFER_FORMAT_YUV444P,    24  },
-    { AV_PIX_FMT_RGBA,      NVFBC_BUFFER_FORMAT_RGBA,       32  },
     { AV_PIX_FMT_BGRA,      NVFBC_BUFFER_FORMAT_BGRA,       32  },  // native
+    { AV_PIX_FMT_ARGB,      NVFBC_BUFFER_FORMAT_ARGB,       32  },
+    { AV_PIX_FMT_RGBA,      NVFBC_BUFFER_FORMAT_RGBA,       32  },
+    { AV_PIX_FMT_RGB24,     NVFBC_BUFFER_FORMAT_RGB,        24  },
+    { AV_PIX_FMT_YUV444P,   NVFBC_BUFFER_FORMAT_YUV444P,    24  },
+    { AV_PIX_FMT_NV12,      NVFBC_BUFFER_FORMAT_NV12,       12  },
 };
 
 static const struct {
@@ -228,7 +228,7 @@ static av_cold int create_stream(AVFormatContext *s)
 
     st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
     st->codecpar->codec_id   = AV_CODEC_ID_RAWVIDEO;
-    st->codecpar->format     = c->format;
+    st->codecpar->format     = nvfbc_formats[c->format_idx].pixfmt;
     st->codecpar->width      = c->frame_width;
     st->codecpar->height     = c->frame_height;
     st->codecpar->bit_rate   = av_rescale(frame_size_bits, c->framerate.num, c->framerate.den);
@@ -523,20 +523,19 @@ static av_cold int nvfbc_read_header(AVFormatContext *s)
     c->frame_duration = av_rescale_q(1, c->time_base, AV_TIME_BASE_Q);
     c->time_frame = av_gettime_relative();
 
-    if (c->format == AV_PIX_FMT_NONE)
-        c->format = AV_PIX_FMT_BGRA; // default to native format
-
-    c->format_idx = -1;
-    for (int i = 0; i < FF_ARRAY_ELEMS(nvfbc_formats); i++) {
-        if (nvfbc_formats[i].pixfmt == c->format) {
-            c->format_idx = i;
-            break;
+    if (c->format != AV_PIX_FMT_NONE) {
+        c->format_idx = -1;
+        for (int i = 0; i < FF_ARRAY_ELEMS(nvfbc_formats); i++) {
+            if (nvfbc_formats[i].pixfmt == c->format) {
+                c->format_idx = i;
+                break;
+            }
         }
-    }
-    if (c->format_idx == -1) {
-        av_log(s, AV_LOG_ERROR, "Unsupported pixel format.\n");
-        ret = AVERROR(EINVAL);
-        goto error;
+        if (c->format_idx == -1) {
+            av_log(s, AV_LOG_ERROR, "Unsupported pixel format.\n");
+            ret = AVERROR(EINVAL);
+            goto error;
+        }
     }
 
     // prepare execution
