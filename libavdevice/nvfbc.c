@@ -171,7 +171,7 @@ static int nvfbc_read_packet(AVFormatContext *s, AVPacket *pkt)
 {
     NvFBCContext *c = s->priv_data;
     NVFBC_FRAME_GRAB_INFO frameInfo = {};
-    NVFBC_TOSYS_GRAB_FRAME_PARAMS nv_tosys_grab_frame_params = {
+    NVFBC_TOSYS_GRAB_FRAME_PARAMS nvtsgf_params = {
         .dwVersion      = NVFBC_TOSYS_GRAB_FRAME_PARAMS_VER,
         .dwFlags        = NVFBC_TOSYS_GRAB_FLAGS_NOWAIT,
         .pFrameGrabInfo = &frameInfo,
@@ -182,8 +182,7 @@ static int nvfbc_read_packet(AVFormatContext *s, AVPacket *pkt)
 
     wait_frame(s, pkt);
 
-    result = c->funcs.nvFBCToSysGrabFrame(c->handle,
-                                          &nv_tosys_grab_frame_params);
+    result = c->funcs.nvFBCToSysGrabFrame(c->handle, &nvtsgf_params);
     if (result != NVFBC_SUCCESS) {
        av_log(s, AV_LOG_ERROR, "Cannot grab framebuffer: %s.\n",
                c->funcs.nvFBCGetLastErrorStr(c->handle));
@@ -200,7 +199,8 @@ static int nvfbc_read_packet(AVFormatContext *s, AVPacket *pkt)
     pkt->data = c->frame_data;
     pkt->size = frameInfo.dwByteSize;
 
-    pkt->dts = pkt->pts = pts;
+    pkt->dts = pts;
+    pkt->pts = pts;
     pkt->duration = c->frame_duration;
 
     return 0;
@@ -239,14 +239,14 @@ static av_cold int create_stream(AVFormatContext *s)
 static av_cold int create_capture_session(AVFormatContext *s)
 {
     NvFBCContext *c = s->priv_data;
-    NVFBC_CREATE_HANDLE_PARAMS nv_create_handle_params = {
+    NVFBC_CREATE_HANDLE_PARAMS nvch_params = {
         .dwVersion                 = NVFBC_CREATE_HANDLE_PARAMS_VER,
         .bExternallyManagedContext = NVFBC_FALSE,
     };
-    NVFBC_GET_STATUS_PARAMS nv_get_status_params = {
+    NVFBC_GET_STATUS_PARAMS nvgs_params = {
         .dwVersion  = NVFBC_GET_STATUS_PARAMS_VER,
     };
-    NVFBC_CREATE_CAPTURE_SESSION_PARAMS nv_create_capture_session_params = {
+    NVFBC_CREATE_CAPTURE_SESSION_PARAMS nvccs_params = {
         .dwVersion                   = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER,
         .eCaptureType                = NVFBC_CAPTURE_TO_SYS,
         .bDisableAutoModesetRecovery = NVFBC_TRUE,
@@ -262,7 +262,7 @@ static av_cold int create_capture_session(AVFormatContext *s)
         },
         .bRoundFrameSize             = NVFBC_FALSE,
     };
-    NVFBC_TOSYS_SETUP_PARAMS nv_tosys_setup_params = {
+    NVFBC_TOSYS_SETUP_PARAMS nvtss_params = {
         .dwVersion     = NVFBC_TOSYS_SETUP_PARAMS_VER,
         .eBufferFormat = nvfbc_formats[c->format_idx].nvfbc_fmt,
         .ppBuffer      = (void **)&c->frame_data,
@@ -270,16 +270,17 @@ static av_cold int create_capture_session(AVFormatContext *s)
     };
     NVFBCSTATUS result;
 
-    result = c->funcs.nvFBCCreateHandle(&c->handle, &nv_create_handle_params);
+    result = c->funcs.nvFBCCreateHandle(&c->handle, &nvch_params);
     if (result != NVFBC_SUCCESS) {
         const char *desc;
         int ret = error_nv2av(result, &desc);
         av_log(s, AV_LOG_ERROR, "Cannot create NvFBC handle: %s.\n", desc);
         return ret;
+    } else {
+        c->handle_created = 1;
     }
-    c->handle_created = 1;
 
-    result = c->funcs.nvFBCGetStatus(c->handle, &nv_get_status_params);
+    result = c->funcs.nvFBCGetStatus(c->handle, &nvgs_params);
     if (result != NVFBC_SUCCESS) {
         av_log(s, AV_LOG_ERROR, "Cannot get NvFBC status: %s.\n",
                c->funcs.nvFBCGetLastErrorStr(c->handle));
@@ -288,38 +289,37 @@ static av_cold int create_capture_session(AVFormatContext *s)
 
     av_log(s, AV_LOG_VERBOSE, "NvFBC status:\n");
     av_log(s, AV_LOG_VERBOSE, "- Library API version: %"PRIu32".%"PRIu32"\n",
-           (nv_get_status_params.dwNvFBCVersion >> 8) & 0xFF,
-           nv_get_status_params.dwNvFBCVersion & 0xFF);
+           (nvgs_params.dwNvFBCVersion >> 8) & 0xFF,
+           nvgs_params.dwNvFBCVersion & 0xFF);
     av_log(s, AV_LOG_VERBOSE, "- Capture supported: %s\n",
-           nv_get_status_params.bIsCapturePossible ? "yes" : "no");
+           nvgs_params.bIsCapturePossible ? "yes" : "no");
     av_log(s, AV_LOG_VERBOSE, "- Capture currently running: %s\n",
-           nv_get_status_params.bCurrentlyCapturing ? "yes" : "no");
+           nvgs_params.bCurrentlyCapturing ? "yes" : "no");
     av_log(s, AV_LOG_VERBOSE, "- Capture creatable: %s\n",
-           nv_get_status_params.bCanCreateNow ? "yes" : "no");
+           nvgs_params.bCanCreateNow ? "yes" : "no");
     av_log(s, AV_LOG_VERBOSE, "- Screen size: %"PRIu32"x%"PRIu32"\n",
-           nv_get_status_params.screenSize.w,
-           nv_get_status_params.screenSize.h);
+           nvgs_params.screenSize.w, nvgs_params.screenSize.h);
     av_log(s, AV_LOG_VERBOSE, "- RandR extension available: %s\n",
-           nv_get_status_params.bXRandRAvailable ? "yes" : "no");
+           nvgs_params.bXRandRAvailable ? "yes" : "no");
 #if NVFBC_MIN_VERSION(1, 8)
     av_log(s, AV_LOG_VERBOSE, "- X server in modeset: %s\n",
-           nv_get_status_params.bInModeset ? "yes" : "no");
+           nvgs_params.bInModeset ? "yes" : "no");
 #endif
     av_log(s, AV_LOG_VERBOSE, "- %"PRIu32" outputs connected:\n",
-           nv_get_status_params.dwOutputNum);
+           nvgs_params.dwOutputNum);
 
-    for (uint32_t dw = 0; dw < nv_get_status_params.dwOutputNum; dw++) {
+    for (uint32_t dw = 0; dw < nvgs_params.dwOutputNum; dw++) {
         av_log(s, AV_LOG_VERBOSE,
                "  - %"PRIu32": %s (%"PRIu32"x%"PRIu32"+%"PRIu32"+%"PRIu32")\n",
-               nv_get_status_params.outputs[dw].dwId,
-               nv_get_status_params.outputs[dw].name,
-               nv_get_status_params.outputs[dw].trackedBox.w,
-               nv_get_status_params.outputs[dw].trackedBox.h,
-               nv_get_status_params.outputs[dw].trackedBox.x,
-               nv_get_status_params.outputs[dw].trackedBox.y);
+               nvgs_params.outputs[dw].dwId,
+               nvgs_params.outputs[dw].name,
+               nvgs_params.outputs[dw].trackedBox.w,
+               nvgs_params.outputs[dw].trackedBox.h,
+               nvgs_params.outputs[dw].trackedBox.x,
+               nvgs_params.outputs[dw].trackedBox.y);
     }
 
-    if (nv_get_status_params.bCanCreateNow == NVFBC_FALSE) {
+    if (nvgs_params.bCanCreateNow == NVFBC_FALSE) {
         av_log(s, AV_LOG_ERROR,
                "Cannot create a capture session on this system.\n");
         return AVERROR_EXTERNAL;
@@ -329,18 +329,17 @@ static av_cold int create_capture_session(AVFormatContext *s)
     if (c->output_name != NULL) {
         int found = 0;
 
-        for (uint32_t dw = 0; dw < nv_get_status_params.dwOutputNum; dw++) {
-            if (!strcmp(c->output_name,
-                        nv_get_status_params.outputs[dw].name)) {
+        for (uint32_t dw = 0; dw < nvgs_params.dwOutputNum; dw++) {
+            if (!strcmp(c->output_name, nvgs_params.outputs[dw].name)) {
                 // store output geometry
-                c->x = nv_get_status_params.outputs[dw].trackedBox.x;
-                c->y = nv_get_status_params.outputs[dw].trackedBox.y;
-                c->w = nv_get_status_params.outputs[dw].trackedBox.w;
-                c->h = nv_get_status_params.outputs[dw].trackedBox.h;
+                c->x = nvgs_params.outputs[dw].trackedBox.x;
+                c->y = nvgs_params.outputs[dw].trackedBox.y;
+                c->w = nvgs_params.outputs[dw].trackedBox.w;
+                c->h = nvgs_params.outputs[dw].trackedBox.h;
 
                 // update session parameters
-                nv_create_capture_session_params.eTrackingType = NVFBC_TRACKING_OUTPUT;
-                nv_create_capture_session_params.dwOutputId = nv_get_status_params.outputs[dw].dwId;
+                nvccs_params.eTrackingType = NVFBC_TRACKING_OUTPUT;
+                nvccs_params.dwOutputId = nvgs_params.outputs[dw].dwId;
 
                 found = 1;
                 break;
@@ -359,19 +358,19 @@ static av_cold int create_capture_session(AVFormatContext *s)
     if (c->frame_height == 0)
         c->frame_height = c->h;
 
-    nv_create_capture_session_params.frameSize.w = c->frame_width;
-    nv_create_capture_session_params.frameSize.h = c->frame_height;
+    nvccs_params.frameSize.w = c->frame_width;
+    nvccs_params.frameSize.h = c->frame_height;
 
-    result = c->funcs.nvFBCCreateCaptureSession(c->handle,
-                                                &nv_create_capture_session_params);
+    result = c->funcs.nvFBCCreateCaptureSession(c->handle, &nvccs_params);
     if (result != NVFBC_SUCCESS) {
         av_log(s, AV_LOG_ERROR, "Cannot create capture session: %s.\n",
                c->funcs.nvFBCGetLastErrorStr(c->handle));
         return error_nv2av(result, NULL);
+    } else {
+        c->capture_session_created = 1;
     }
-    c->capture_session_created = 1;
 
-    result = c->funcs.nvFBCToSysSetUp(c->handle, &nv_tosys_setup_params);
+    result = c->funcs.nvFBCToSysSetUp(c->handle, &nvtss_params);
     if (result != NVFBC_SUCCESS) {
         av_log(s, AV_LOG_ERROR, "Cannot set up capture to system memory: %s.\n",
                c->funcs.nvFBCGetLastErrorStr(c->handle));
