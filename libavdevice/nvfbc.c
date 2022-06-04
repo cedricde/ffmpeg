@@ -212,7 +212,7 @@ static av_cold int create_stream(AVFormatContext *s)
     AVStream *st;
     int64_t frame_size_bits;
 
-    frame_size_bits = (int64_t)c->frame_width * c->frame_width * nvfbc_formats[c->format_idx].bpp;
+    frame_size_bits = (int64_t)c->frame_width * c->frame_height * nvfbc_formats[c->format_idx].bpp;
     if (frame_size_bits / 8 + AV_INPUT_BUFFER_PADDING_SIZE > INT_MAX) {
         av_log(s, AV_LOG_ERROR, "Capture area is too large.\n");
         return AVERROR_PATCHWELCOME;
