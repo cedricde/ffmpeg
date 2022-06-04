@@ -499,9 +499,9 @@ static av_cold int nvfbc_read_header(AVFormatContext *s)
     // compute capture region
     if (c->output_name == NULL) {
         if (c->w == 0)
-            c->w = FFMIN(screen_w - c->x, 0);
+            c->w = FFMAX(screen_w - c->x, 0);
         if (c->h == 0)
-            c->h = FFMIN(screen_h - c->y, 0);
+            c->h = FFMAX(screen_h - c->y, 0);
 
         // check capture region
         if (c->x < 0 || c->y < 0) {
