@@ -458,6 +458,7 @@ static av_cold int nvfbc_read_header(AVFormatContext *s)
     Screen *screen;
     int screen_w, screen_h;
     int count, ret;
+    char trailer;
 
     // load NvFBC library
     ret = nvfbc_load_libraries(s);
@@ -478,12 +479,12 @@ static av_cold int nvfbc_read_header(AVFormatContext *s)
     // parse URL for definition of the capture box
     if (s->url != NULL && s->url[0] != '\0') {
         // complete definition: size and position
-        count = sscanf(s->url, "%dx%d+%d+%d", &c->w, &c->h, &c->x, &c->y);
-        if (count != 4) {
+        count = sscanf(s->url, " %d x %d + %d + %d %c", &c->w, &c->h, &c->x, &c->y, &trailer);
+        if (count != 2 && count != 4) {
             c->w = c->h = 0;
 
             // partial definition: position only
-            count = sscanf(s->url, "+%d+%d", &c->x, &c->y);
+            count = sscanf(s->url, " + %d + %d %c", &c->x, &c->y, &trailer);
             if (count != 2) {
                 c->x = c->y = 0;
 
