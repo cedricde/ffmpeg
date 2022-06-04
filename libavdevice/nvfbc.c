@@ -49,8 +49,6 @@ typedef struct NvFBCContext {
     int frame_width, frame_height;
     /// Name of the output to capture or NULL for capture box in whole X screen
     const char *output_name;
-    /// Identifier of the RandR output
-    uint32_t output_id;
     /// Pixel format
     enum AVPixelFormat format;
 
@@ -253,10 +251,7 @@ static av_cold int create_capture_session(AVFormatContext *s)
         .eCaptureType                = NVFBC_CAPTURE_TO_SYS,
         .bDisableAutoModesetRecovery = NVFBC_TRUE,
         .bWithCursor                 = NVFBC_TRUE,
-        .eTrackingType               = c->output_name != NULL
-                                       ? NVFBC_TRACKING_OUTPUT
-                                       : NVFBC_TRACKING_SCREEN,
-        .dwOutputId                  = c->output_id,
+        .eTrackingType               = NVFBC_TRACKING_SCREEN,
         .bPushModel                  = NVFBC_FALSE,
         .dwSamplingRateMs            = av_rescale_q(c->frame_duration, AV_TIME_BASE_Q, (AVRational){ 1, 1000 }),
         .captureBox                  = {
@@ -337,12 +332,15 @@ static av_cold int create_capture_session(AVFormatContext *s)
         for (uint32_t dw = 0; dw < nv_get_status_params.dwOutputNum; dw++) {
             if (!strcmp(c->output_name,
                         nv_get_status_params.outputs[dw].name)) {
-                // store output information
-                c->output_id = nv_get_status_params.outputs[dw].dwId;
+                // store output geometry
                 c->x = nv_get_status_params.outputs[dw].trackedBox.x;
                 c->y = nv_get_status_params.outputs[dw].trackedBox.y;
                 c->w = nv_get_status_params.outputs[dw].trackedBox.w;
                 c->h = nv_get_status_params.outputs[dw].trackedBox.h;
+
+                // update session parameters
+                nv_create_capture_session_params.eTrackingType = NVFBC_TRACKING_OUTPUT;
+                nv_create_capture_session_params.dwOutputId = nv_get_status_params.outputs[dw].dwId;
 
                 found = 1;
                 break;
