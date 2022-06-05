@@ -72,9 +72,9 @@ typedef struct NvFBCContext {
     /// NvFBC session handle
     NVFBC_SESSION_HANDLE handle;
     /// True if the handle is created, false if not
-    int handle_created;
+    int has_handle;
     /// True if the capture session is created, false if not
-    int capture_session_created;
+    int has_capture_session;
     /// Pointer to frame data
     uint8_t *frame_data;
 } NvFBCContext;
@@ -279,7 +279,7 @@ static av_cold int create_capture_session(AVFormatContext *s)
         av_log(s, AV_LOG_ERROR, "Cannot create NvFBC handle: %s.\n", desc);
         return ret;
     } else {
-        c->handle_created = 1;
+        c->has_handle = 1;
     }
 
     result = c->funcs.nvFBCGetStatus(c->handle, &nvgs_params);
@@ -369,7 +369,7 @@ static av_cold int create_capture_session(AVFormatContext *s)
                c->funcs.nvFBCGetLastErrorStr(c->handle));
         return error_nv2av(result, NULL);
     } else {
-        c->capture_session_created = 1;
+        c->has_capture_session = 1;
     }
 
     result = c->funcs.nvFBCToSysSetUp(c->handle, &nvtss_params);
@@ -422,7 +422,7 @@ static av_cold int nvfbc_read_close(AVFormatContext *s)
     NvFBCContext *c = s->priv_data;
     NVFBCSTATUS result;
 
-    if (c->capture_session_created) {
+    if (c->has_capture_session) {
         NVFBC_DESTROY_CAPTURE_SESSION_PARAMS params = {
             .dwVersion = NVFBC_DESTROY_CAPTURE_SESSION_PARAMS_VER,
         };
@@ -432,10 +432,10 @@ static av_cold int nvfbc_read_close(AVFormatContext *s)
             av_log(s, AV_LOG_WARNING, "Cannot destroy capture session: %s.\n",
                    c->funcs.nvFBCGetLastErrorStr(c->handle));
         }
-        c->capture_session_created = 0;
+        c->has_capture_session = 0;
     }
 
-    if (c->handle_created) {
+    if (c->has_handle) {
         NVFBC_DESTROY_HANDLE_PARAMS params = {
             .dwVersion = NVFBC_DESTROY_HANDLE_PARAMS_VER,
         };
@@ -445,7 +445,7 @@ static av_cold int nvfbc_read_close(AVFormatContext *s)
             av_log(s, AV_LOG_WARNING, "Cannot destroy NvFBC handle: %s.\n",
                    c->funcs.nvFBCGetLastErrorStr(c->handle));
         }
-        c->handle_created = 0;
+        c->has_handle = 0;
     }
 
     nvfbc_free_libraries(s);
