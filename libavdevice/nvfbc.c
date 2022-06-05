@@ -145,6 +145,11 @@ static int error_nv2av(NVFBCSTATUS nverr, const char **desc)
     return AVERROR_UNKNOWN;
 }
 
+/**
+ * Wait until next frame shall be captured.
+ *
+ * @return Current wall-clock time.
+ */
 static int64_t wait_frame(AVFormatContext *s, AVPacket *pkt)
 {
     NvFBCContext *c = s->priv_data;
@@ -160,7 +165,7 @@ static int64_t wait_frame(AVFormatContext *s, AVPacket *pkt)
         av_usleep(delay);
     }
 
-    return curtime;
+    return av_gettime();
 }
 
 static void free_noop(void *opaque, uint8_t *data)
@@ -180,7 +185,7 @@ static int nvfbc_read_packet(AVFormatContext *s, AVPacket *pkt)
     int64_t pts;
     NVFBCSTATUS result;
 
-    wait_frame(s, pkt);
+    pts = wait_frame(s, pkt);
 
     result = c->funcs.nvFBCToSysGrabFrame(c->handle, &nvtsgf_params);
     if (result != NVFBC_SUCCESS) {
@@ -188,8 +193,6 @@ static int nvfbc_read_packet(AVFormatContext *s, AVPacket *pkt)
                c->funcs.nvFBCGetLastErrorStr(c->handle));
         return error_nv2av(result, NULL);
     }
-
-    pts = av_gettime();
 
     pkt->buf = av_buffer_create(c->frame_data, frameInfo.dwByteSize, free_noop,
                                 s, AV_BUFFER_FLAG_READONLY);
@@ -199,7 +202,6 @@ static int nvfbc_read_packet(AVFormatContext *s, AVPacket *pkt)
     pkt->data = c->frame_data;
     pkt->size = frameInfo.dwByteSize;
 
-    pkt->dts = pts;
     pkt->pts = pts;
     pkt->duration = c->frame_duration;
 
