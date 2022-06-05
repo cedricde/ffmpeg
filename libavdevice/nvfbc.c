@@ -36,9 +36,9 @@
 #include "libavformat/avformat.h"
 #include "libavformat/internal.h"
 
-#define NVFBC_MIN_VERSION(x,y)  \
-    (NVFBC_VERSION_MAJOR > (x) || (NVFBC_VERSION_MAJOR == (x) \
-                                   && NVFBC_VERSION_MINOR >= (y)))
+#define NVFBC_CHECK_VERSION(major, minor)  \
+    (NVFBC_VERSION_MAJOR > (major) || \
+     (NVFBC_VERSION_MAJOR == (major) && NVFBC_VERSION_MINOR >= (minor)))
 
 typedef struct NvFBCContext {
     const AVClass *class;
@@ -123,7 +123,7 @@ static const struct {
     { NVFBC_ERR_ENCODER,        AVERROR_EXTERNAL,       "HW encoder error"          },
     { NVFBC_ERR_CONTEXT,        AVERROR(EBADF),         "NvFBC context error"       },
     { NVFBC_ERR_MUST_RECREATE,  AVERROR_INPUT_CHANGED,  "modeset event occurred"    },
-#if NVFBC_MIN_VERSION(1, 8)
+#if NVFBC_CHECK_VERSION(1, 8)
     { NVFBC_ERR_VULKAN,         AVERROR_EXTERNAL,       "Vulkan error"              },
 #endif
 };
@@ -303,7 +303,7 @@ static av_cold int create_capture_session(AVFormatContext *s)
            nvgs_params.screenSize.w, nvgs_params.screenSize.h);
     av_log(s, AV_LOG_VERBOSE, "- RandR extension available: %s\n",
            nvgs_params.bXRandRAvailable ? "yes" : "no");
-#if NVFBC_MIN_VERSION(1, 8)
+#if NVFBC_CHECK_VERSION(1, 8)
     av_log(s, AV_LOG_VERBOSE, "- X server in modeset: %s\n",
            nvgs_params.bInModeset ? "yes" : "no");
 #endif
