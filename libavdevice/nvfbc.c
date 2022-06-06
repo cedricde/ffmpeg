@@ -101,7 +101,7 @@ static const AVOption options[] = {
     { "format", "set pixel format", OFFSET(format), AV_OPT_TYPE_PIXEL_FMT, { .i64 = AV_PIX_FMT_BGRA }, -1, INT_MAX, FLAGS },
     { "framerate", "set capture framerate", OFFSET(framerate), AV_OPT_TYPE_VIDEO_RATE, { .str = "pal" }, 0, INT_MAX, FLAGS },
 #if CONFIG_CUDA
-    { "cuda_device", "CUDA device to use", OFFSET(hwdevice_name), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, FLAGS },
+    { "device", "CUDA device to use", OFFSET(hwdevice_name), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, FLAGS },
 #endif
     { NULL },
 };
