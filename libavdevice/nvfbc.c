@@ -751,15 +751,15 @@ static av_cold int nvfbc_read_header(AVFormatContext *s)
     screen_w = XWidthOfScreen(screen);
     screen_h = XHeightOfScreen(screen);
 
-    // parse URL for definition of the capture box
-    if (s->url && s->url[0]) {
-        // complete definition: size and position
+    // parse URL for definition of the capture box (treat "-" as whole display)
+    if (s->url && s->url[0] && strcmp(s->url, "pipe:")) {
+        // first format: size and optional position
         count = sscanf(s->url, " %d x %d + %d + %d %c",
                        &ctx->w, &ctx->h, &ctx->x, &ctx->y, &trailer);
         if (count != 2 && count != 4) {
             ctx->w = ctx->h = 0;
 
-            // partial definition: position only
+            // second format: position only
             count = sscanf(s->url, " + %d + %d %c", &ctx->x, &ctx->y, &trailer);
             if (count != 2) {
                 ctx->x = ctx->y = 0;
