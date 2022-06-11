@@ -194,8 +194,14 @@ static int64_t wait_frame(AVFormatContext *s, AVPacket *pkt)
     for (;;) {
         curtime = av_gettime_relative();
         delay   = ctx->time_frame - curtime;
-        if (delay <= 0)
+        if (delay <= 0) {
+            // correct any lost frames
+            if (delay <= -ctx->frame_duration) {
+                ctx->time_frame += (delay / -ctx->frame_duration) *
+                                       ctx->frame_duration;
+            }
             break;
+        }
         av_usleep(delay);
     }
 
