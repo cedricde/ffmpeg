@@ -29,14 +29,17 @@
 #include "compat/nvfbc/dynlink_loader.h"
 
 #include "libavutil/avutil.h"
-#include "libavutil/cuda_check.h"
-#include "libavutil/hwcontext.h"
-#include "libavutil/hwcontext_cuda_internal.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/internal.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/time.h"
+
+#if CONFIG_CUDA
+# include "libavutil/cuda_check.h"
+# include "libavutil/hwcontext.h"
+# include "libavutil/hwcontext_cuda_internal.h"
+#endif
 
 #include "libavformat/avformat.h"
 #include "libavformat/internal.h"
@@ -153,6 +156,12 @@ static const struct {
 #endif
 };
 
+/**
+ * Convert NvFBC error code to FFmpeg.
+ * @param nverr NvFBC error code.
+ * @param desc Optional pointer which receives the associated error message.
+ * @return FFmpeg error code.
+ */
 static int error_nv2av(NVFBCSTATUS nverr, const char **desc)
 {
     for (int i = 0; i < FF_ARRAY_ELEMS(nvfbc_errors); i++) {
@@ -168,25 +177,6 @@ static int error_nv2av(NVFBCSTATUS nverr, const char **desc)
         *desc = "unknown error";
 
     return AVERROR_UNKNOWN;
-}
-
-static int nvfbc_push_context(AVFormatContext *s)
-{
-    NvFBCContext *ctx = s->priv_data;
-    AVCUDADeviceContext *hwctx = ((AVHWDeviceContext*)ctx->hwdevice_ref->data)->hwctx;
-    CudaFunctions *cudl = hwctx->internal->cuda_dl;
-
-    return FF_CUDA_CHECK_DL(s, cudl, cudl->cuCtxPushCurrent(hwctx->cuda_ctx));
-}
-
-static int nvfbc_pop_context(AVFormatContext *s)
-{
-    NvFBCContext *ctx = s->priv_data;
-    AVCUDADeviceContext *hwctx = ((AVHWDeviceContext*)ctx->hwdevice_ref->data)->hwctx;
-    CudaFunctions *cudl = hwctx->internal->cuda_dl;
-    CUcontext dummy;
-
-    return FF_CUDA_CHECK_DL(s, cudl, cudl->cuCtxPopCurrent(&dummy));
 }
 
 /**
@@ -212,8 +202,91 @@ static int64_t wait_frame(AVFormatContext *s, AVPacket *pkt)
     return av_gettime();
 }
 
+/** Free function which does nothing. */
 static void free_noop(void *opaque, uint8_t *data)
 {
+}
+
+static av_cold int nvfbc_load_libraries(AVFormatContext *s)
+{
+    NvFBCContext *ctx = s->priv_data;
+    NVFBCSTATUS nv_res;
+    const char *desc;
+    int res;
+
+    res = nvfbc_load_functions(&ctx->dl, s);
+    if (res < 0)
+        return res;
+
+    av_log(s, AV_LOG_VERBOSE, "Built for NvFBC API version %u.%u.\n",
+           NVFBC_VERSION_MAJOR, NVFBC_VERSION_MINOR);
+
+    ctx->funcs.dwVersion = NVFBC_VERSION;
+
+    nv_res = ctx->dl->NvFBCCreateInstance(&ctx->funcs);
+    if (nv_res != NVFBC_SUCCESS) {
+        res = error_nv2av(nv_res, &desc);
+        av_log(s, AV_LOG_ERROR, "Cannot create NvFBC instance: %s.\n", desc);
+        return res;
+    }
+
+    return 0;
+}
+
+static av_cold int create_capture_session_tosys(AVFormatContext *s)
+{
+    NvFBCContext *ctx = s->priv_data;
+    NVFBC_CREATE_CAPTURE_SESSION_PARAMS nvccs_params = {
+        .dwVersion                   = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER,
+        .eCaptureType                = NVFBC_CAPTURE_TO_SYS,
+        .bDisableAutoModesetRecovery = NVFBC_TRUE,
+        .bWithCursor                 = NVFBC_TRUE,
+        .eTrackingType               = ctx->output_name ? NVFBC_TRACKING_OUTPUT
+                                                        : NVFBC_TRACKING_SCREEN,
+        .dwOutputId                  = ctx->output_id,
+        .bPushModel                  = NVFBC_FALSE,
+        .dwSamplingRateMs            = av_rescale_q(ctx->frame_duration,
+                                                    AV_TIME_BASE_Q,
+                                                    (AVRational){ 1, 1000 }),
+        .captureBox                  = {
+            .x = ctx->x,
+            .y = ctx->y,
+            .w = ctx->w,
+            .h = ctx->h,
+        },
+        .frameSize                   = {
+            .w = ctx->frame_width,
+            .h = ctx->frame_height,
+        },
+        .bRoundFrameSize             = NVFBC_FALSE,
+    };
+    NVFBC_TOSYS_SETUP_PARAMS nvtss_params = {
+        .dwVersion     = NVFBC_TOSYS_SETUP_PARAMS_VER,
+        .eBufferFormat = nvfbc_formats[ctx->format_idx].nvfbc_fmt,
+        .ppBuffer      = (void **)&ctx->frame_data,
+        .bWithDiffMap  = NVFBC_FALSE,
+    };
+    NVFBCSTATUS nv_res;
+
+    nv_res = ctx->funcs.nvFBCCreateCaptureSession(ctx->handle, &nvccs_params);
+    if (nv_res != NVFBC_SUCCESS) {
+        av_log(s, AV_LOG_ERROR,
+               "Cannot create capture to system memory session: %s.\n",
+               ctx->funcs.nvFBCGetLastErrorStr(ctx->handle));
+        return error_nv2av(nv_res, NULL);
+    } else {
+        ctx->has_capture_session = 1;
+    }
+
+    nv_res = ctx->funcs.nvFBCToSysSetUp(ctx->handle, &nvtss_params);
+    if (nv_res != NVFBC_SUCCESS) {
+        av_log(s, AV_LOG_ERROR,
+               "Cannot set up capture to system memory: %s.\n",
+               ctx->funcs.nvFBCGetLastErrorStr(ctx->handle));
+        return error_nv2av(nv_res, NULL);
+    }
+
+    return 0;
 }
 
 static int nvfbc_read_packet_tosys(AVFormatContext *s, AVPacket *pkt)
@@ -258,11 +331,123 @@ static int nvfbc_read_packet_tosys(AVFormatContext *s, AVPacket *pkt)
     return 0;
 }
 
+#if CONFIG_CUDA
 static void free_av_frame(void *opaque, uint8_t *data)
 {
     AVFrame *frame = (AVFrame*)data;
 
     av_frame_free(&frame);
+}
+
+static int nvfbc_push_context(AVFormatContext *s)
+{
+    NvFBCContext *ctx = s->priv_data;
+    AVCUDADeviceContext *hwctx = ((AVHWDeviceContext*)ctx->hwdevice_ref->data)->hwctx;
+    CudaFunctions *cudl = hwctx->internal->cuda_dl;
+
+    return FF_CUDA_CHECK_DL(s, cudl, cudl->cuCtxPushCurrent(hwctx->cuda_ctx));
+}
+
+static int nvfbc_pop_context(AVFormatContext *s)
+{
+    NvFBCContext *ctx = s->priv_data;
+    AVCUDADeviceContext *hwctx = ((AVHWDeviceContext*)ctx->hwdevice_ref->data)->hwctx;
+    CudaFunctions *cudl = hwctx->internal->cuda_dl;
+    CUcontext dummy;
+
+    return FF_CUDA_CHECK_DL(s, cudl, cudl->cuCtxPopCurrent(&dummy));
+}
+
+static av_cold int create_capture_session_tocuda(AVFormatContext *s)
+{
+    NvFBCContext *ctx = s->priv_data;
+    AVHWFramesContext *hwframes;
+    NVFBC_CREATE_CAPTURE_SESSION_PARAMS nvccs_params = {
+        .dwVersion                   = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER,
+        .eCaptureType                = NVFBC_CAPTURE_SHARED_CUDA,
+        .bDisableAutoModesetRecovery = NVFBC_TRUE,
+        .bWithCursor                 = NVFBC_TRUE,
+        .eTrackingType               = ctx->output_name ? NVFBC_TRACKING_OUTPUT
+                                                        : NVFBC_TRACKING_SCREEN,
+        .dwOutputId                  = ctx->output_id,
+        .bPushModel                  = NVFBC_FALSE,
+        .dwSamplingRateMs            = av_rescale_q(ctx->frame_duration,
+                                                    AV_TIME_BASE_Q,
+                                                    (AVRational){ 1, 1000 }),
+        .captureBox                  = {
+            .x = ctx->x,
+            .y = ctx->y,
+            .w = ctx->w,
+            .h = ctx->h,
+        },
+        .frameSize                   = {
+            .w = ctx->frame_width,
+            .h = ctx->frame_height,
+        },
+        .bRoundFrameSize             = NVFBC_FALSE,
+    };
+    NVFBC_TOCUDA_SETUP_PARAMS nvtcs_params = {
+        .dwVersion     = NVFBC_TOCUDA_SETUP_PARAMS_VER,
+        .eBufferFormat = nvfbc_formats[ctx->format_idx].nvfbc_fmt,
+    };
+    NVFBCSTATUS nv_res;
+    int res;
+
+    // create CUDA hardware contexts
+    res = av_hwdevice_ctx_create(&ctx->hwdevice_ref, AV_HWDEVICE_TYPE_CUDA,
+                                 ctx->hwdevice_name, NULL, 0);
+    if (res < 0) {
+        av_log(s, AV_LOG_ERROR, "Failed to open CUDA device.\n");
+        return res;
+    }
+
+    ctx->hwframes_ref = av_hwframe_ctx_alloc(ctx->hwdevice_ref);
+    if (!ctx->hwframes_ref)
+        return AVERROR(ENOMEM);
+
+    hwframes = (AVHWFramesContext*)ctx->hwframes_ref->data;
+    hwframes->format    = AV_PIX_FMT_CUDA;
+    hwframes->sw_format = ctx->format;
+    hwframes->width     = ctx->frame_width;
+    hwframes->height    = ctx->frame_height;
+
+    res = av_hwframe_ctx_init(ctx->hwframes_ref);
+    if (res < 0) {
+        av_log(s, AV_LOG_ERROR,
+               "Failed to initialize hardware frames context.\n");
+        return res;
+    }
+
+    res = nvfbc_push_context(s);
+    if (res < 0)
+        return res;
+
+    nv_res = ctx->funcs.nvFBCCreateCaptureSession(ctx->handle, &nvccs_params);
+    if (nv_res != NVFBC_SUCCESS) {
+        av_log(s, AV_LOG_ERROR,
+               "Cannot create capture to video memory session: %s.\n",
+               ctx->funcs.nvFBCGetLastErrorStr(ctx->handle));
+        res = error_nv2av(nv_res, NULL);
+        goto error_ctx;
+    } else {
+        ctx->has_capture_session = 1;
+    }
+
+    nv_res = ctx->funcs.nvFBCToCudaSetUp(ctx->handle, &nvtcs_params);
+    if (nv_res != NVFBC_SUCCESS) {
+        av_log(s, AV_LOG_ERROR,
+               "Cannot set up capture to video memory: %s.\n",
+               ctx->funcs.nvFBCGetLastErrorStr(ctx->handle));
+        res = error_nv2av(nv_res, NULL);
+        goto error_ctx;
+    }
+
+    res = 0;
+
+error_ctx:
+    nvfbc_pop_context(s);
+
+    return res;
 }
 
 static int nvfbc_read_packet_tocuda(AVFormatContext *s, AVPacket *pkt)
@@ -364,53 +549,7 @@ error:
 
     return res;
 }
-
-static int nvfbc_read_packet(AVFormatContext *s, AVPacket *pkt)
-{
-    NvFBCContext *ctx = s->priv_data;
-
-    if (ctx->hwdevice_ref)
-        return nvfbc_read_packet_tocuda(s, pkt);
-    else
-        return nvfbc_read_packet_tosys(s, pkt);
-}
-
-
-static av_cold int create_stream(AVFormatContext *s)
-{
-    NvFBCContext *ctx = s->priv_data;
-    AVStream *st;
-    int64_t frame_size_bits;
-
-    frame_size_bits = (int64_t)ctx->frame_width * ctx->frame_height * nvfbc_formats[ctx->format_idx].bpp;
-    if (frame_size_bits / 8 + AV_INPUT_BUFFER_PADDING_SIZE > INT_MAX) {
-        av_log(s, AV_LOG_ERROR, "Capture area is too large.\n");
-        return AVERROR_PATCHWELCOME;
-    }
-
-    st = avformat_new_stream(s, NULL);
-    if (!st)
-        return AVERROR(ENOMEM);
-
-    avpriv_set_pts_info(st, 64, 1, 1000000); /* 64 bits pts in us */
-
-    st->avg_frame_rate = ctx->framerate;
-
-    st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
-    st->codecpar->width      = ctx->frame_width;
-    st->codecpar->height     = ctx->frame_height;
-    st->codecpar->bit_rate   = av_rescale(frame_size_bits, ctx->framerate.num,
-                                                           ctx->framerate.den);
-    if (ctx->hwdevice_ref) {
-        st->codecpar->codec_id = AV_CODEC_ID_WRAPPED_AVFRAME;
-        st->codecpar->format   = AV_PIX_FMT_CUDA;
-    } else {
-        st->codecpar->codec_id = AV_CODEC_ID_RAWVIDEO;
-        st->codecpar->format   = ctx->format;
-    }
-
-    return 0;
-}
+#endif // CONFIG_CUDA
 
 static av_cold int create_capture_handle(AVFormatContext *s)
 {
@@ -513,175 +652,37 @@ static av_cold int create_capture_handle(AVFormatContext *s)
     return 0;
 }
 
-static av_cold int create_capture_session_tosys(AVFormatContext *s)
+static av_cold int create_stream(AVFormatContext *s)
 {
     NvFBCContext *ctx = s->priv_data;
-    NVFBC_CREATE_CAPTURE_SESSION_PARAMS nvccs_params = {
-        .dwVersion                   = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER,
-        .eCaptureType                = NVFBC_CAPTURE_TO_SYS,
-        .bDisableAutoModesetRecovery = NVFBC_TRUE,
-        .bWithCursor                 = NVFBC_TRUE,
-        .eTrackingType               = ctx->output_name ? NVFBC_TRACKING_OUTPUT
-                                                        : NVFBC_TRACKING_SCREEN,
-        .dwOutputId                  = ctx->output_id,
-        .bPushModel                  = NVFBC_FALSE,
-        .dwSamplingRateMs            = av_rescale_q(ctx->frame_duration,
-                                                    AV_TIME_BASE_Q,
-                                                    (AVRational){ 1, 1000 }),
-        .captureBox                  = {
-            .x = ctx->x,
-            .y = ctx->y,
-            .w = ctx->w,
-            .h = ctx->h,
-        },
-        .frameSize                   = {
-            .w = ctx->frame_width,
-            .h = ctx->frame_height,
-        },
-        .bRoundFrameSize             = NVFBC_FALSE,
-    };
-    NVFBC_TOSYS_SETUP_PARAMS nvtss_params = {
-        .dwVersion     = NVFBC_TOSYS_SETUP_PARAMS_VER,
-        .eBufferFormat = nvfbc_formats[ctx->format_idx].nvfbc_fmt,
-        .ppBuffer      = (void **)&ctx->frame_data,
-        .bWithDiffMap  = NVFBC_FALSE,
-    };
-    NVFBCSTATUS nv_res;
+    AVStream *st;
+    int64_t frame_size_bits;
 
-    nv_res = ctx->funcs.nvFBCCreateCaptureSession(ctx->handle, &nvccs_params);
-    if (nv_res != NVFBC_SUCCESS) {
-        av_log(s, AV_LOG_ERROR,
-               "Cannot create capture to system memory session: %s.\n",
-               ctx->funcs.nvFBCGetLastErrorStr(ctx->handle));
-        return error_nv2av(nv_res, NULL);
-    } else {
-        ctx->has_capture_session = 1;
+    frame_size_bits = (int64_t)ctx->frame_width * ctx->frame_height * nvfbc_formats[ctx->format_idx].bpp;
+    if (frame_size_bits / 8 + AV_INPUT_BUFFER_PADDING_SIZE > INT_MAX) {
+        av_log(s, AV_LOG_ERROR, "Capture area is too large.\n");
+        return AVERROR_PATCHWELCOME;
     }
 
-    nv_res = ctx->funcs.nvFBCToSysSetUp(ctx->handle, &nvtss_params);
-    if (nv_res != NVFBC_SUCCESS) {
-        av_log(s, AV_LOG_ERROR,
-               "Cannot set up capture to system memory: %s.\n",
-               ctx->funcs.nvFBCGetLastErrorStr(ctx->handle));
-        return error_nv2av(nv_res, NULL);
-    }
-
-    return 0;
-}
-
-static av_cold int create_capture_session_tocuda(AVFormatContext *s)
-{
-    NvFBCContext *ctx = s->priv_data;
-    AVHWFramesContext *hwframes;
-    NVFBC_CREATE_CAPTURE_SESSION_PARAMS nvccs_params = {
-        .dwVersion                   = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER,
-        .eCaptureType                = NVFBC_CAPTURE_SHARED_CUDA,
-        .bDisableAutoModesetRecovery = NVFBC_TRUE,
-        .bWithCursor                 = NVFBC_TRUE,
-        .eTrackingType               = ctx->output_name ? NVFBC_TRACKING_OUTPUT
-                                                        : NVFBC_TRACKING_SCREEN,
-        .dwOutputId                  = ctx->output_id,
-        .bPushModel                  = NVFBC_FALSE,
-        .dwSamplingRateMs            = av_rescale_q(ctx->frame_duration,
-                                                    AV_TIME_BASE_Q,
-                                                    (AVRational){ 1, 1000 }),
-        .captureBox                  = {
-            .x = ctx->x,
-            .y = ctx->y,
-            .w = ctx->w,
-            .h = ctx->h,
-        },
-        .frameSize                   = {
-            .w = ctx->frame_width,
-            .h = ctx->frame_height,
-        },
-        .bRoundFrameSize             = NVFBC_FALSE,
-    };
-    NVFBC_TOCUDA_SETUP_PARAMS nvtcs_params = {
-        .dwVersion     = NVFBC_TOCUDA_SETUP_PARAMS_VER,
-        .eBufferFormat = nvfbc_formats[ctx->format_idx].nvfbc_fmt,
-    };
-    NVFBCSTATUS nv_res;
-    int res;
-
-    // create CUDA hardware contexts
-    res = av_hwdevice_ctx_create(&ctx->hwdevice_ref, AV_HWDEVICE_TYPE_CUDA,
-                                 ctx->hwdevice_name, NULL, 0);
-    if (res < 0) {
-        av_log(s, AV_LOG_ERROR, "Failed to open CUDA device.\n");
-        return res;
-    }
-
-    ctx->hwframes_ref = av_hwframe_ctx_alloc(ctx->hwdevice_ref);
-    if (!ctx->hwframes_ref)
+    st = avformat_new_stream(s, NULL);
+    if (!st)
         return AVERROR(ENOMEM);
 
-    hwframes = (AVHWFramesContext*)ctx->hwframes_ref->data;
-    hwframes->format    = AV_PIX_FMT_CUDA;
-    hwframes->sw_format = ctx->format;
-    hwframes->width     = ctx->frame_width;
-    hwframes->height    = ctx->frame_height;
+    avpriv_set_pts_info(st, 64, 1, 1000000); /* 64 bits pts in us */
 
-    res = av_hwframe_ctx_init(ctx->hwframes_ref);
-    if (res < 0) {
-        av_log(s, AV_LOG_ERROR,
-               "Failed to initialize hardware frames context.\n");
-        return res;
-    }
+    st->avg_frame_rate = ctx->framerate;
 
-    res = nvfbc_push_context(s);
-    if (res < 0)
-        return res;
-
-    nv_res = ctx->funcs.nvFBCCreateCaptureSession(ctx->handle, &nvccs_params);
-    if (nv_res != NVFBC_SUCCESS) {
-        av_log(s, AV_LOG_ERROR,
-               "Cannot create capture to video memory session: %s.\n",
-               ctx->funcs.nvFBCGetLastErrorStr(ctx->handle));
-        res = error_nv2av(nv_res, NULL);
-        goto error_ctx;
+    st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+    st->codecpar->width      = ctx->frame_width;
+    st->codecpar->height     = ctx->frame_height;
+    st->codecpar->bit_rate   = av_rescale(frame_size_bits, ctx->framerate.num,
+                                                           ctx->framerate.den);
+    if (ctx->hwdevice_ref) {
+        st->codecpar->codec_id = AV_CODEC_ID_WRAPPED_AVFRAME;
+        st->codecpar->format   = AV_PIX_FMT_CUDA;
     } else {
-        ctx->has_capture_session = 1;
-    }
-
-    nv_res = ctx->funcs.nvFBCToCudaSetUp(ctx->handle, &nvtcs_params);
-    if (nv_res != NVFBC_SUCCESS) {
-        av_log(s, AV_LOG_ERROR,
-               "Cannot set up capture to video memory: %s.\n",
-               ctx->funcs.nvFBCGetLastErrorStr(ctx->handle));
-        res = error_nv2av(nv_res, NULL);
-        goto error_ctx;
-    }
-
-    res = 0;
-
-error_ctx:
-    nvfbc_pop_context(s);
-
-    return res;
-}
-
-static av_cold int nvfbc_load_libraries(AVFormatContext *s)
-{
-    NvFBCContext *ctx = s->priv_data;
-    NVFBCSTATUS nv_res;
-    const char *desc;
-    int res;
-
-    res = nvfbc_load_functions(&ctx->dl, s);
-    if (res < 0)
-        return res;
-
-    av_log(s, AV_LOG_VERBOSE, "Built for NvFBC API version %u.%u.\n",
-           NVFBC_VERSION_MAJOR, NVFBC_VERSION_MINOR);
-
-    ctx->funcs.dwVersion = NVFBC_VERSION;
-
-    nv_res = ctx->dl->NvFBCCreateInstance(&ctx->funcs);
-    if (nv_res != NVFBC_SUCCESS) {
-        res = error_nv2av(nv_res, &desc);
-        av_log(s, AV_LOG_ERROR, "Cannot create NvFBC instance: %s.\n", desc);
-        return res;
+        st->codecpar->codec_id = AV_CODEC_ID_RAWVIDEO;
+        st->codecpar->format   = ctx->format;
     }
 
     return 0;
@@ -817,9 +818,11 @@ static av_cold int nvfbc_read_header(AVFormatContext *s)
     if (res < 0)
         goto error;
 
+#if CONFIG_CUDA
     if (ctx->hwdevice_name)
         res = create_capture_session_tocuda(s);
     else
+#endif
         res = create_capture_session_tosys(s);
     if (res < 0)
         goto error;
@@ -841,6 +844,19 @@ error:
 
     return res;
 }
+
+static int nvfbc_read_packet(AVFormatContext *s, AVPacket *pkt)
+{
+#if CONFIG_CUDA
+    NvFBCContext *ctx = s->priv_data;
+
+    if (ctx->hwdevice_ref)
+        return nvfbc_read_packet_tocuda(s, pkt);
+    else
+#endif
+        return nvfbc_read_packet_tosys(s, pkt);
+}
+
 
 static const AVClass nvfbc_class = {
     .class_name = "nvfbc indev",
