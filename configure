@@ -346,6 +346,7 @@ External library support:
   --enable-mmal            enable Broadcom Multi-Media Abstraction Layer (Raspberry Pi) via MMAL [no]
   --disable-nvdec          disable Nvidia video decoding acceleration (via hwaccel) [autodetect]
   --disable-nvenc          disable Nvidia video encoding code [autodetect]
+  --disable-nvfbc          disable Nvidia hardware framebuffer capture [autodetect]
   --enable-omx             enable OpenMAX IL code [no]
   --enable-omx-rpi         enable OpenMAX IL code for Raspberry Pi [no]
   --enable-rkmpp           enable Rockchip Media Process Platform code [no]
@@ -1887,6 +1888,7 @@ HWACCEL_AUTODETECT_LIBRARY_LIST="
     ffnvcodec
     nvdec
     nvenc
+    nvfbc
     vaapi
     vdpau
     videotoolbox
@@ -3537,6 +3539,8 @@ kmsgrab_indev_deps="libdrm"
 lavfi_indev_deps="avfilter"
 libcdio_indev_deps="libcdio"
 libdc1394_indev_deps="libdc1394"
+nvfbc_indev_deps="libdl xlib_x11"
+nvfbc_indev_suggest="cuda"
 openal_indev_deps="openal"
 opengl_outdev_deps="opengl"
 opengl_outdev_suggest="sdl2"
@@ -7021,7 +7025,7 @@ if enabled x86; then
         mingw32*|mingw64*|win32|win64|linux|cygwin*)
             ;;
         *)
-            disable ffnvcodec cuvid nvdec nvenc
+            disable ffnvcodec cuvid nvdec nvenc nvfbc
             ;;
     esac
 elif enabled_any aarch64 ppc64 && ! enabled bigendian; then
@@ -7029,11 +7033,11 @@ elif enabled_any aarch64 ppc64 && ! enabled bigendian; then
         linux)
             ;;
         *)
-            disable ffnvcodec cuvid nvdec nvenc
+            disable ffnvcodec cuvid nvdec nvenc nvfbc
             ;;
     esac
 else
-    disable ffnvcodec cuvid nvdec nvenc
+    disable ffnvcodec cuvid nvdec nvenc nvfbc
 fi
 
 enabled ffnvcodec && enable cuda
@@ -7053,6 +7057,14 @@ fi
 if enabled_any nvdec cuvid; then
     check_type "ffnvcodec/dynlink_cuda.h ffnvcodec/dynlink_cuviddec.h" "CUVIDAV1PICPARAMS"
 fi
+
+enabled nvfbc &&
+    test_cc -I$source_path <<EOF || disable nvfbc
+#include "compat/nvfbc/NvFBC.h"
+NVFBC_API_FUNCTION_LIST flist;
+void f(void) { struct { const NVFBC_CREATE_CAPTURE_SESSION_PARAMS params; } s[] = { { NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER } }; }
+int main(void) { return 0; }
+EOF
 
 enabled amf &&
     check_cpp_condition amf "AMF/core/Version.h" \
