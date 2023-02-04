@@ -243,6 +243,7 @@ static void free_init_section_list(struct playlist *pls)
 {
     int i;
     for (i = 0; i < pls->n_init_sections; i++) {
+        av_freep(&pls->init_sections[i]->key);
         av_freep(&pls->init_sections[i]->url);
         av_freep(&pls->init_sections[i]);
     }
@@ -833,10 +834,10 @@ static int parse_playlist(HLSContext *c, const char *url,
             if (ret < 0)
                 goto fail;
             seq_no = strtoull(ptr, NULL, 10);
-            if (seq_no > INT64_MAX) {
+            if (seq_no > INT64_MAX/2) {
                 av_log(c->ctx, AV_LOG_DEBUG, "MEDIA-SEQUENCE higher than "
-                        "INT64_MAX, mask out the highest bit\n");
-                seq_no &= INT64_MAX;
+                        "INT64_MAX/2, mask out the highest bit\n");
+                seq_no &= INT64_MAX/2;
             }
             pls->start_seq_no = seq_no;
         } else if (av_strstart(line, "#EXT-X-PLAYLIST-TYPE:", &ptr)) {
